@@ -23,19 +23,21 @@ class IFFPCS(nn.Module):
 
     def forward(self, a, b):
         size = a.shape[-2:]
+        padded_size = size
         if self.mode == "rgb":
             difference = (b - a).abs()
             distance = difference.mean(1, keepdim=True).expand(-1, 3, -1, -1)
         else:
             self.encoder.eval()
             pad = (0, (-size[1]) % 14, 0, (-size[0]) % 14)
+            padded_size = (size[0] + pad[3], size[1] + pad[1])
             mean = a.new_tensor([0.485, 0.456, 0.406])[None, :, None, None]
             std = a.new_tensor([0.229, 0.224, 0.225])[None, :, None, None]
             with torch.no_grad():
                 fa = self.encoder.get_intermediate_layers(F.pad((a - mean) / std, pad), n=[2, 5, 11], reshape=True)
                 fb = self.encoder.get_intermediate_layers(F.pad((b - mean) / std, pad), n=[2, 5, 11], reshape=True)
             maps = [1 - F.cosine_similarity(x, y, dim=1, eps=1e-6)[:, None] for x, y in zip(fa, fb)]
-            distance = F.interpolate(torch.cat(maps, 1), size=size, mode="bilinear", align_corners=False)
+            distance = F.interpolate(torch.cat(maps, 1), size=padded_size, mode="bilinear", align_corners=False)
             selected = [0, 1, 2] if self.mode == "all" else [2 if self.mode == "deep" else 1]
             differences = [self.projections[k](fb[k] - fa[k]) for k in selected]
             difference = F.interpolate(torch.cat(differences, 1), size=maps[0].shape[-2:], mode="bilinear", align_corners=False)
@@ -43,8 +45,8 @@ class IFFPCS(nn.Module):
         if self.permute:
             g = g.flatten(2).roll(g.shape[-2] * g.shape[-1] // 3, -1).reshape_as(g)
         attenuation = F.interpolate(1 - g, size=difference.shape[-2:], mode="bilinear", align_corners=False)
-        logits = F.interpolate(self.decoder(difference * attenuation), size=size, mode="bilinear", align_corners=False)
-        return logits, g, distance
+        logits = F.interpolate(self.decoder(difference * attenuation), size=padded_size, mode="bilinear", align_corners=False)
+        return tuple(value[..., :size[0], :size[1]] for value in (logits, g, distance))
 
 
 def boundary(x):
